@@ -143,7 +143,10 @@ class DPOTrainer:
 
     def __process_input_ids(self, input_ids, attention_mask, compute_ref_logprobs: bool = True):
         input_data = {"input_ids": input_ids, "attention_mask": attention_mask}
-        logits = self.model(**input_data).logits
+        outputs = self.model(**input_data, output_hidden_states=self.config.token_ches_max_cos <= 1)
+        logits = outputs.logits
+        # last hidden embeddings at the positions that predict tokens 1..L-1 (aligned with logprobs and get_prompt_mask)
+        self._last_hidden = outputs.hidden_states[-1][:, :-1].detach().float() if outputs.hidden_states is not None else None
         logprobs = logprobs_from_logits(logits[:, :-1, :], input_ids[:, 1:])
 
         if not compute_ref_logprobs:
@@ -214,15 +217,25 @@ class DPOTrainer:
 
     def __perform_dpo_or_ipo_step(self, input_ids_w, attention_mask_w, input_ids_l, attention_mask_l, return_stats):
         logprobs_w, old_logprobs_w = self.__process_input_ids(input_ids_w, attention_mask_w)
+        hidden_w = self._last_hidden
         logprobs_l, old_logprobs_l = self.__process_input_ids(input_ids_l, attention_mask_l)
+        hidden_l = self._last_hidden
 
         mask_w = self.get_prompt_mask(input_ids_w, attention_mask_w)
         mask_l = self.get_prompt_mask(input_ids_l, attention_mask_l)
 
+        # Per-token CHES on the dispreferred side: <S_l, S_w> = sum_j <h_l_j, S_w>. Tokens of y- whose hidden embedding is
+        # aligned with the whole preferred response drag log pi(y+) down when pushed down, so they are dropped from log pi(y-).
+        keep_l = mask_l
+        if hidden_w is not None:
+            sum_w = (hidden_w * mask_w.unsqueeze(-1)).sum(dim=1)
+            cos_l = (hidden_l @ sum_w.unsqueeze(-1)).squeeze(-1) / (hidden_l.norm(dim=-1) * sum_w.norm(dim=-1, keepdim=True) + 1e-6)
+            keep_l = mask_l * (cos_l <= self.config.token_ches_max_cos)
+
         seq_logprobs_w = (logprobs_w * mask_w).sum(dim=-1)
-        seq_logprobs_l = (logprobs_l * mask_l).sum(dim=-1)
+        seq_logprobs_l = (logprobs_l * keep_l).sum(dim=-1)
         seq_old_logprobs_w = (old_logprobs_w * mask_w).sum(dim=-1)
-        seq_old_logprobs_l = (old_logprobs_l * mask_l).sum(dim=-1)
+        seq_old_logprobs_l = (old_logprobs_l * keep_l).sum(dim=-1)
 
         if self.config.objective == "dpo":
             loss = self.__compute_dpo_loss(seq_logprobs_w, seq_logprobs_l, seq_old_logprobs_w, seq_old_logprobs_l)
@@ -251,7 +264,8 @@ class DPOTrainer:
                 "train/reference_dispreferred_logprobs_mean": seq_old_logprobs_l.mean().detach().cpu().item(),
                 "train/pi_logratios_mean": pi_logratio.mean().detach().cpu().item(),
                 "train/pi_reference_log_ratio_diff_mean": log_ratio_diff.mean().detach().cpu().item(),
-                "train/preference_classifier_accuracy": torch.mean((pi_logratio > 0).float()).cpu().item()
+                "train/preference_classifier_accuracy": torch.mean((pi_logratio > 0).float()).cpu().item(),
+                "train/token_ches_filtered_frac": (1 - keep_l.sum() / mask_l.sum()).cpu().item()
             }
             return loss, stats
         else:

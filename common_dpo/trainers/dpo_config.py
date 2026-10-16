@@ -76,6 +76,9 @@ class DPOConfig:
     """Which objective to use (supports 'dpo', 'ipo', 'simpo', 'slic', and 'cross_entropy')"""
     sft_coeff: float = 0
     """Additional SFT term coefficient for the DPO/IPO loss"""
+    token_ches_max_cos: float = 2.0
+    """Tokens of the dispreferred response whose last hidden embedding has cosine similarity above this value with the sum of
+    the preferred response hidden embeddings are dropped from the DPO/IPO loss (values above 1 disable the filter)"""
 
     def __post_init__(self):
         # check if wandb is installed

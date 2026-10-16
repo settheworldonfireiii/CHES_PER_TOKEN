@@ -62,6 +62,8 @@ flags.DEFINE_string("objective", "dpo", "which objective to use (supports 'dpo',
 flags.DEFINE_float("kl_coeff", 0.1, "the KL coefficient to use in the DPO and IPO objectives")
 flags.DEFINE_float("sft_coeff", 0,
                    "if non-zero, will use an sft term in addition to dpo and ipo with this coefficient (e.g., as done in CPO, RPO, ORPO)")
+flags.DEFINE_float("token_ches_max_cos", 2.0, "drop dispreferred tokens whose hidden embedding cosine similarity with the sum of preferred "
+                                         "hidden embeddings exceeds this value (values above 1 disable the per-token CHES filter)")
 
 flags.DEFINE_bool("model_parallel_without_accelerate", False,
                   "whether to use model parallelism (only use when running script without accelerate)")
@@ -470,6 +472,7 @@ def main(_):
             objective=FLAGS.objective,
             kl_coeff=FLAGS.kl_coeff,
             sft_coeff=FLAGS.sft_coeff,
+            token_ches_max_cos=FLAGS.token_ches_max_cos,
             project_kwargs={
                 "project_dir": output_dir,
             },
